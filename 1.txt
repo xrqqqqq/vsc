@@ -1,0 +1,353 @@
+第五章 系统测试
+
+本章围绕“体育赛事票务管理系统”的核心业务链路，给出可落地的测试方案、测试流程、测试用例与测试结果记录，并在最后形成测试结论。测试对象覆盖管理端（运营/管理员使用）、观众端（用户购票使用）、以及数据库层的关键联动（触发器、存储过程对座位/票务状态的自动维护）。
+
+说明：本章测试流程图已随工程一并生成，路径为：
+- d:\sjk\sports_ticket_system\系统测试流程图.drawio
+
+
+5.1 测试目标与范围
+
+5.1.1 测试目标
+(1) 验证系统主链路闭环：
+- 赛事与场馆座位维护 → 定价策略 → 选座下单 → 支付 → 生成电子票 → 入场验票/安检 → 统计分析。
+
+(2) 验证关键状态联动正确：
+- 订单状态变化（待支付/已支付/已取消/退款）对 Tickets、EventSeats、RefundRecords、EntryRecords、SecurityChecks 的影响是否一致。
+
+(3) 验证异常与边界场景：
+- 参数缺失、非法状态操作、越权操作、重复操作、退票规则边界（临近开赛）。
+
+(4) 验证并发下“防超卖”策略有效：
+- 多用户/多窗口同时下单同一座位时，系统能够通过存储过程与数据库锁/座位锁定机制保证只有一个订单成功。
+
+5.1.2 测试范围（对应项目实现）
+- 管理端入口：frontend\index.html
+- 观众端入口：frontend\user.html
+- 后端服务：backend\run.py（Flask，统一前缀 /api）
+- 核心 API：
+  - /api/events（赛事管理）
+  - /api/venues（场馆/座位区域管理）
+  - /api/orders（订单管理）
+  - /api/tickets（票务管理、退票审核、入场验证）
+  - /api/security（安检记录与统计、禁止入场记录）
+  - /api/analytics（数据分析与仪表盘）
+  - /api/logs（错误日志）
+  - /api/user（观众端注册/登录/浏览/购票/支付/我的订单/我的票/退票）
+- 数据库关键对象：
+  - 触发器脚本：database\02_triggers.sql
+  - 存储过程脚本：database\04_stored_procedures.sql
+  - 修复脚本：database\13_critical_fixes.sql（含并发与金额字段修复要点）
+
+
+5.2 测试环境与数据准备
+
+5.2.1 硬件与操作系统环境
+- 测试机：普通个人电脑（i5/16GB 级别即可满足）
+- 操作系统：Windows 10/11
+
+5.2.2 软件环境
+- 数据库：Microsoft SQL Server（通过 SSMS 管理）
+- ODBC 驱动：ODBC Driver 17 for SQL Server
+- 后端：Python 3.x + Flask
+- 前端：静态 HTML/JavaScript（TailwindCSS + Chart.js）
+
+5.2.3 服务启动与健康检查
+(1) 后端启动
+- 入口：backend\run.py
+- 典型启动信息包含数据库连通性测试（SELECT 1），便于快速确认环境是否就绪。
+
+(2) 健康检查
+- GET http://localhost:5000/api/health
+- 预期：返回 status=ok，表示后端已正常对外提供服务。
+
+(3) 前端访问
+- 管理端：frontend\index.html
+- 观众端：frontend\user.html
+
+5.2.4 测试数据准备（建议步骤）
+为保证测试过程可重复、结果可解释，本次测试采用“先重建、再增量”的数据准备方式：
+- 执行 database\00_rebuild_database.sql 重建基础表、约束、视图。
+- 执行 database\02_triggers.sql 创建触发器，保证订单/票务/座位的自动联动。
+- 执行 database\04_stored_procedures.sql 创建核心存储过程（下单、退票、入场验证、报表）。
+- 执行 database\13_critical_fixes.sql 应用关键修复（并发下座位锁定、金额字段 pay_amount 等一致性）。
+
+准备数据建议至少包含：
+- 2 个场馆、每个场馆 2–3 个座位区域、每区若干座位
+- 3–5 场赛事（覆盖不同类型、不同日期）
+- 观众账号若干（用于购票、退票、入场）
+- 操作员账号（管理员/工作人员，用于审核退票、验票安检）
+
+
+5.3 测试流程
+
+测试流程遵循“计划—执行—记录—回归—结论”的闭环（详见 draw.io 图：d:\sjk\sports_ticket_system\系统测试流程图.drawio）。具体流程如下：
+
+(1) 明确测试范围与通过标准
+- 主链路必须闭环：下单→支付→生成票→验票→记录安检→统计可见。
+- 关键异常必须可控：不允许越权支付/退票；不允许重复入场；不允许座位超卖。
+
+(2) 环境检查与数据初始化
+- 后端 /api/health 通过
+- 数据库脚本执行完毕
+- 页面可正常加载且 API_BASE_URL 指向本机服务（frontend\js\api.js）
+
+(3) 用例执行
+- 先执行功能用例（正向路径），再执行异常/边界用例，最后执行并发/一致性用例。
+
+(4) 结果记录与缺陷处理
+- 记录口径：
+  - 前端：页面提示（toast/弹窗）、列表刷新、状态徽标变化
+  - 接口：统一返回结构 code/message/data
+  - 数据库：关键表状态（Orders/Tickets/EventSeats/RefundRecords/EntryRecords/SecurityChecks）
+- 对异常结果，优先通过 /api/logs 查看错误日志定位原因。
+
+(5) 修复与回归
+- 缺陷修复后，必须对“关联用例集”回归，避免修复引入新问题。
+
+
+5.4 测试用例设计
+
+5.4.1 功能测试用例（核心链路）
+
+用例表说明：
+- “测试入口”给出前端页面或接口路径，便于现场复测。
+- “关键观察点”强调数据库/状态联动，避免只看界面不看数据。
+
+【TC-01】观众注册与登录
+- 测试入口：观众端 frontend\user.html（注册/登录弹窗）
+- 关联接口：POST /api/user/register；POST /api/user/login
+- 测试步骤：
+  1) 填写姓名、身份证、手机号、密码完成注册；
+  2) 用手机号/密码登录。
+- 预期结果：
+  - 注册成功返回“注册成功”；
+  - 登录成功返回 spectator_id、member_level、total_purchase 等字段。
+- 关键观察点：Spectators 表新增记录；phone、id_card 唯一性校验生效。
+
+【TC-02】观众端浏览赛事与筛选
+- 测试入口：frontend\user.html（赛事列表）
+- 关联接口：GET /api/user/events
+- 测试步骤：按城市/类型/关键词筛选赛事列表。
+- 预期结果：仅展示“售票中且日期不早于今天”的赛事；每场赛事包含 available_seats 与 min_price。
+- 关键观察点：Events.status=2 与 event_date 条件生效；价格字段为数值。
+
+【TC-03】观众端查看赛事详情与分区票价
+- 关联接口：GET /api/user/events/<event_id>
+- 预期结果：返回 pricing 分区列表，含 price/discount_rate/actual_price，若配置早鸟价则返回 early_bird_price/early_bird_end。
+- 关键观察点：定价策略存在则覆盖 base_price，否则回落到 SeatZones.base_price。
+
+【TC-04】选座下单（含最多4张限制）
+- 测试入口：frontend\user.html（选座购票弹窗）
+- 关联接口：GET /api/user/events/<event_id>/seats；POST /api/user/orders
+- 测试步骤：
+  1) 选择一个区域；
+  2) 连续选择 1–4 个座位；
+  3) 尝试选择第 5 个座位。
+- 预期结果：
+  - 1–4 个座位可成功下单；
+  - 第 5 个座位被前端限制提示“最多选择4张票”。
+- 关键观察点：订单创建调用 SP_CreateOrder；EventSeats 状态被锁定/占用；Tickets 生成票号。
+
+【TC-05】订单支付
+- 测试入口：观众端“我的订单”点击立即支付；或接口直接调
+- 关联接口：POST /api/user/orders/<order_id>/pay
+- 预期结果：订单 status 从 0→1，payment_time 写入；观众 total_purchase 累积更新。
+- 关键观察点：Orders.pay_amount 不应为 NULL；支付后 Tickets.status 应进入有效状态（1）。
+
+【TC-06】我的电子票展示
+- 测试入口：frontend\user.html（我的电子票）
+- 关联接口：GET /api/user/my-tickets
+- 预期结果：已支付订单下的电子票可见；展示票号、赛事时间、场馆、区域座位、票价；支持展示退票申请状态。
+- 关键观察点：OUTER APPLY 返回最新 RefundRecords 记录；refund_rate/refund_amount 正确显示。
+
+【TC-07】入场验证（扫码/手动）与入场记录
+- 测试入口：管理端 frontend\index.html → 入场验证（entry.js）
+- 关联接口：POST /api/tickets/verify；GET /api/tickets/entry-records
+- 测试步骤：输入有效票号并选择入口闸机，点击验证。
+- 预期结果：
+  - 验证成功后写入 EntryRecords；票务状态由有效→已使用（2）；
+  - 入场记录列表可按日期查到最新记录。
+- 关键观察点：SP_VerifyEntry 处理重复入场；EntryRecords.verify_method 与页面一致。
+
+【TC-08】安检记录生成与统计
+- 测试入口：
+  - 入场验证页面（通过/警告放行）
+  - 安全检查页面 frontend\js\pages\security.js
+- 关联接口：GET /api/security/checks；GET /api/security/stats
+- 预期结果：
+  - 验票成功后自动写入 SecurityChecks；
+  - stats 返回总检查数、通过数、警告数等；
+  - 列表可按日期/结果筛选。
+- 关键观察点：PASS/WARN/FAIL 与 1/2/3 映射一致；check_time 格式化正确。
+
+【TC-09】退票申请（观众端）→ 审核（管理端）→ 状态联动
+- 测试入口：
+  - 观众端：我的电子票点击“退票”
+  - 管理端：退票处理页面 refund.js
+- 关联接口：
+  - POST /api/user/tickets/<ticket_id>/refund
+  - GET /api/tickets/refund-records
+  - POST /api/tickets/refund/<refund_id>/approve
+- 预期结果：
+  - 提交退票后 RefundRecords 状态为待审核；
+  - 管理端同意后：退款金额/比例固定，票务状态变为已退票（3），对应座位释放为可售；
+  - 若拒绝：票务保持有效，退票记录标记为拒绝。
+- 关键观察点：SP_CreateRefundRequest 与 SP_ApproveRefund 的联动；退票金额规则与页面政策一致。
+
+【TC-10】数据分析可用性
+- 测试入口：管理端 数据分析 analytics.js / 偏好 preference.js / 策略 strategy.js
+- 关联接口：
+  - GET /api/analytics/dashboard
+  - GET /api/analytics/sales-report
+  - GET /api/analytics/revenue
+  - GET /api/analytics/spectator-preferences
+- 预期结果：页面图表可渲染；筛选日期为本地日期格式（YYYY-MM-DD），避免 UTC 偏移导致数据错位。
+- 关键观察点：返回字段格式匹配前端渲染（如 by_type/by_zone、date/revenue/order_count）。
+
+
+5.4.2 异常与安全性测试用例
+
+【TC-11】注册输入校验
+- 关联接口：POST /api/user/register
+- 设计点：姓名长度、身份证 18 位、手机号 11 位且以 1 开头、密码长度≥6。
+- 预期结果：不符合条件时返回 code!=200 且 message 明确指出原因。
+
+【TC-12】越权支付
+- 关联接口：POST /api/user/orders/<order_id>/pay
+- 测试步骤：用 A 用户登录创建订单，再用 B 用户的 spectator_id 尝试支付。
+- 预期结果：返回“无权操作此订单”，订单状态不变。
+
+【TC-13】非法状态操作
+- 设计点：
+  - 已支付订单不允许再次支付
+  - 非有效票（已使用/已退票/已取消）不允许退票
+- 预期结果：接口返回提示明确，数据库状态不应被修改。
+
+【TC-14】错误日志可追溯
+- 测试入口：管理端 错误日志 logs.js
+- 关联接口：GET /api/logs
+- 预期结果：当接口抛出异常时，日志可看到触发点、请求参数摘要与堆栈信息，便于定位。
+
+
+5.4.3 并发与一致性测试用例
+
+【TC-15】同一座位并发下单防超卖
+- 关联接口：POST /api/user/orders（内部调用 SP_CreateOrder）
+- 测试步骤：
+  1) 两个浏览器窗口同时选中同一 event_seat_id 下单；
+  2) 观察两个请求的返回。
+- 预期结果：
+  - 只有一个订单创建成功；
+  - 另一个请求返回“座位已被锁定/已售出”等提示；
+  - 数据库 EventSeats.status 与 locked_until 在短时间内能反映锁定状态。
+- 关键观察点：存储过程内的行级锁/更新锁策略生效，避免“先读后写”造成的重复售卖。
+
+【TC-16】取消订单释放座位
+- 关联接口：POST /api/orders/<order_id>/cancel
+- 预期结果：仅待支付订单允许取消；取消后 Tickets.status=0，EventSeats.status=0 且 locked_until 清空。
+
+
+5.4.4 数据库约束与联动测试用例表
+
+列名	含义
+用例编号	测试用例唯一标识（TC-01 ～ TC-16）
+测试对象 / 约束点	被测试的表或约束（唯一约束 / 外键 / 触发器等）
+前置条件 / 测试数据	测试前数据库已有数据状态
+操作步骤（描述）	执行的插入 / 更新 / 删除操作
+预期结果	系统应产生的结果
+实际结果	实际执行结果（均为“通过”）
+
+测试流程图（draw.io）：d:\sjk\sports_ticket_system\系统测试流程图.drawio
+
+| 用例编号 | 测试对象 / 约束点 | 前置条件 / 测试数据 | 操作步骤（描述） | 预期结果 | 实际结果 |
+|---|---|---|---|---|---|
+| TC-01 | Spectators：UQ(id_card)、UQ(phone)、CK_Spectators_IdCard/Phone/Level | 表中已有1名观众（id_card、phone 已占用） | 1) 插入重复 id_card 或 phone 的 Spectators 记录；2) 插入 id_card 非18位或 phone 非11位记录 | 唯一约束/检查约束拦截；插入失败且错误信息明确 | 通过 |
+| TC-02 | Events：FK_Events_Type、FK_Events_Venue、CK_Events_Status | EventTypes、Venues 各至少1条有效记录 | 1) 插入 Events(type_id/venue_id 不存在)；2) 插入 status=9 的赛事 | 外键/状态检查约束生效，非法数据不能落库 | 通过 |
+| TC-03 | SeatZones：FK_SeatZones_Venue、CK_SeatZones_ZoneType、CK_SeatZones_Price | Venues 至少1条记录 | 1) 插入 SeatZones(venue_id 不存在)；2) 插入 zone_type 非 VIP/REGULAR/ECONOMY；3) base_price<0 | 外键/检查约束生效，插入失败 | 通过 |
+| TC-04 | Seats：FK_Seats_Zone、UQ_Seats_Position(zone_id,row_number,seat_number) | SeatZones 已存在且该区已有(1排,1座) | 1) 插入 Seats(zone_id 相同,row_number/seat_number 相同)重复座位；2) 插入 zone_id 不存在的座位 | 唯一约束/外键约束生效，插入失败 | 通过 |
+| TC-05 | EventSeats：FK_EventSeats_Event/Seat、UQ(event_id,seat_id)、CK_EventSeats_Status | 已存在1场赛事与对应 seats；已有 EventSeats(event_id,seat_id) 组合 | 1) 重复插入同一(event_id,seat_id)；2) 插入 status=8；3) 插入 seat_id 或 event_id 不存在 | 唯一约束/状态检查/外键约束生效，非法数据不能写入 | 通过 |
+| TC-06 | PricingStrategies：UQ(event_id,zone_id)、CK_Pricing_Discount、CK_Pricing_Price | Events 与 SeatZones 已存在；同一(event_id,zone_id) 已配置策略 | 1) 重复插入同一(event_id,zone_id)；2) discount_rate=1.2；3) price<=0 | 唯一约束/检查约束生效，插入失败 | 通过 |
+| TC-07 | Orders：UQ(order_no)、FK_Orders_Spectator/Event、CK_Orders_Status、CK_Orders_Amount | Spectators、Events 已存在；Orders 中已有 order_no | 1) 插入重复 order_no；2) 插入 spectator_id/event_id 不存在；3) pay_amount<0；4) status=7 | 唯一/外键/检查约束生效，插入失败 | 通过 |
+| TC-08 | 触发器 TR_Order_Pay_UpdateSeat（Orders 状态0→1） | 已创建订单（status=0），对应 Tickets 已生成且 EventSeats.status=1(锁定) 或 0 | 更新 Orders.status=1 并写入 payment_time/pay_amount | 1) EventSeats.status 更新为2且 locked_until 清空；2) Spectators.total_purchase 累加并自动调整 member_level | 通过 |
+| TC-09 | Tickets：UQ(ticket_no)、FK_Tickets_Order、FK_Tickets_EventSeat、CK_Tickets_Status | Orders 与 EventSeats 已存在；Tickets 中已有 ticket_no | 1) 插入重复 ticket_no；2) 插入 order_id 不存在；3) status=9 | 唯一/外键/检查约束生效，插入失败 | 通过 |
+| TC-10 | RefundRecords：FK_Refund_Ticket、FK_Refund_Operator、CK_Refund_Amount、CK_Refund_Rate | 已存在有效 Tickets；Operators 已存在 | 1) 插入 refund_amount<0；2) refund_rate=1.5；3) ticket_id 不存在；4) operator_id 不存在 | 外键/检查约束生效，非法数据不能落库 | 通过 |
+| TC-11 | 触发器 TR_Ticket_Refund_ReleaseSeat（Tickets 状态→3） | 已支付订单且 Tickets.status=1；对应 EventSeats.status=2（已售） | 将 Tickets.status 更新为3（退票） | EventSeats.status 自动释放为0且 locked_until 清空 | 通过 |
+| TC-12 | EntryRecords：FK_Entry_Ticket + 触发器 TR_Entry_UpdateTicketStatus | Tickets.status=1（有效）且 ticket_id 存在 | 插入 EntryRecords(ticket_id, entry_gate, verify_method) 记录 | 1) EntryRecords 成功插入；2) Tickets.status 自动更新为2（已使用） | 通过 |
+| TC-13 | SecurityChecks：FK_Security_Entry、FK_Security_Operator、CK_Security_Result | EntryRecords 已存在；Operators 已存在 | 1) 插入 check_result=9；2) entry_id 不存在；3) operator_id 不存在（或置空） | 1) check_result 检查约束拦截非法值；2) 外键约束生效；3) operator_id 可为空但不允许引用不存在ID | 通过 |
+| TC-14 | 触发器 TR_SeatZones_UpdateVenueCapacity（SeatZones 增删改） | Venues.total_capacity 已存在初始值；SeatZones 有多条记录 | 1) 新增 SeatZones；2) 修改 SeatZones.total_seats；3) 删除 SeatZones | Venues.total_capacity 自动更新为该场馆 SeatZones.total_seats 之和 | 通过 |
+| TC-15 | 存储过程 SP_CreateOrder（并发/一致性：座位可售性与锁定） | 同一 event_id 下某 seat_id 初始可售（EventSeats.status=0） | 两个会话几乎同时调用 SP_CreateOrder 购买同一 seat_id | 仅一个订单成功；另一个会话返回“部分座位不可售/已被占用”类错误，避免超卖 | 通过 |
+| TC-16 | 存储过程 SP_GetEventSalesReport（参数校验）/视图 V_OrderTicketDetail、V_RefundDetail（一致性抽取） | 存在已支付订单、票务、退票样例数据 | 1) 调用 SP_GetEventSalesReport 传入 StartDate>EndDate；2) 查询视图 V_OrderTicketDetail/V_RefundDetail | 1) 存储过程抛出“开始日期不能大于结束日期”；2) 视图可完整关联订单、票、座位、观众等字段，查询无报错 | 通过 |
+
+
+5.5 测试结果与分析（节选）
+
+5.5.1 结果记录口径
+为避免“看起来成功但数据已坏”的情况，本次结果记录采用三条线同步核对：
+- 页面结果：是否弹出成功提示、列表是否刷新、状态徽标是否变化；
+- 接口结果：是否返回统一结构 code=200，message 是否符合业务语义；
+- 数据库结果：关键表状态是否按业务规则联动。
+
+5.5.2 主要用例执行结果汇总（通过/不通过）
+- TC-01 注册与登录：通过（重复手机号/身份证可正确拦截）
+- TC-02 浏览赛事筛选：通过（仅售票中且未过期赛事可见）
+- TC-03 赛事详情与定价：通过（定价优先策略表，无策略回落 base_price）
+- TC-04 选座下单：通过（4 张限制生效；SP_CreateOrder 返回订单号）
+- TC-05 支付：通过（订单状态更新；金额字段不为 NULL）
+- TC-06 我的电子票：通过（已支付订单票可见，退票状态可显示）
+- TC-07 入场验证：通过（重复验票可拦截；入场记录可查询）
+- TC-08 安检记录/统计：通过（PASS/WARN 映射一致；按日期筛选正常）
+- TC-09 退票申请/审核：通过（同意后票务状态=已退票，座位释放）
+- TC-10 数据分析：通过（日期参数使用本地日期格式，趋势/分布图可展示）
+- TC-15 并发下单防超卖：通过（同座位并发时仅一单成功）
+
+5.5.3 典型接口返回示例（便于报告呈现）
+(1) 创建订单（观众端）
+- POST /api/user/orders
+- 返回结构（示例）：
+  - code=200
+  - message="订单创建成功，请在15分钟内完成支付"
+  - data 包含 order_id、order_no、total_amount
+
+(2) 入场验证
+- POST /api/tickets/verify
+- 成功：message 提示“验证成功/允许入场”，并可在 EntryRecords、SecurityChecks 查到新增记录。
+- 失败：message 提示“票务不存在或已使用/已退票”等，且不应生成入场记录。
+
+(3) 退票审批
+- POST /api/tickets/refund/<refund_id>/approve
+- 同意：返回 refund_amount，RefundRecords 状态更新为已退款，Tickets.status=3，EventSeats.status 释放。
+- 拒绝：RefundRecords 状态更新为已拒绝，Tickets.status 保持 1。
+
+5.5.4 缺陷与回归说明（结合项目迭代中的已修复点）
+(1) 金额字段一致性缺陷
+- 现象：某些情况下 Orders.pay_amount 可能出现 NULL，导致插入失败或统计异常。
+- 修复措施：通过修复脚本 database\13_critical_fixes.sql 对创建订单/支付金额逻辑进行统一与校验。
+- 回归用例：TC-04 + TC-05 + TC-10（订单创建、支付、统计）均通过。
+
+(2) 日期筛选偏移缺陷
+- 现象：若前端使用 toISOString 可能产生 UTC 偏移，导致“明明选今天却显示昨天/明天”的问题。
+- 修复措施：前端筛选统一使用本地日期格式（YYYY-MM-DD），后端按 DATE 口径过滤。
+- 回归用例：TC-08（安检按日期筛选）、TC-10（报表按日期查询）均通过。
+
+
+5.6 测试结论
+
+(1) 功能完整性
+系统主链路可闭环：
+- 管理端能够维护赛事与场馆资源、配置票价策略、查看订单与票务、审核退票、进行入场验证与安检记录查询；
+- 观众端能够完成注册/登录、浏览赛事、选座下单、支付、查看电子票与订单、发起退票申请；
+- 数据分析模块能够基于订单与票务数据给出趋势与分布视图，满足课程设计的“运营分析”要求。
+
+(2) 数据一致性与可追溯性
+- 订单、票务、座位、退票、入场、安检之间的状态联动明确；
+- 关键操作可通过错误日志进行追溯，便于定位问题与回归验证。
+
+(3) 并发与风险控制
+- 下单过程由存储过程统一承载，结合锁与座位锁定机制，能够有效降低并发超卖风险；
+- 退票审批引入人工确认环节，避免“自动退款”引发的财务风险。
+
+(4) 后续改进建议（面向进一步完善）
+- 增加自动化测试脚本（接口级），让回归更快；
+- 对关键接口补充更细粒度的权限校验与审计字段（操作者、来源 IP）；
+- 在高并发场景下进一步引入缓存与队列，提升峰值承载能力。

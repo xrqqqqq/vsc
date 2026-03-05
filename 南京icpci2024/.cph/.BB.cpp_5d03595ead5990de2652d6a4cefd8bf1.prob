@@ -1,0 +1,1 @@
+{"name":"Local: BB","url":"d:\\Necessary\\vsc\\南京icpci2024\\BB.cpp","tests":[{"id":1759656271618,"input":"5\n0110101\n01020102\n0000021111\n1012121010\n0100202010\n","output":""},{"id":1759658327917,"input":"1\n0100202010","output":""}],"interactive":false,"memoryLimit":1024,"timeLimit":3000,"srcPath":"d:\\Necessary\\vsc\\南京icpci2024\\BB.cpp","group":"local","local":true}

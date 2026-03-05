@@ -1,0 +1,9 @@
+# 语言: None, Cpp, Java, JavaScript, ObjC, Proto, TableGen, TextProto
+Language: Cpp
+# 未在配置中专门设置的所有选项所使用的样式
+BasedOnStyle:  Google
+UseTab: Never
+IndentWidth: 4
+TabWidth: 4
+ColumnLimit: 80
+BreakBeforeBraces: Attach
