@@ -1,0 +1,1 @@
+{"name":"Local: 1001","url":"d:\\Necessary\\vsc\\航电\\1\\1001.cpp","tests":[{"id":1774026947909,"input":"1\n5\n3 2 7 6 5","output":"21"},{"id":1774058258659,"input":"1\n3\n1 1 1","output":""}],"interactive":false,"memoryLimit":1024,"timeLimit":3000,"srcPath":"d:\\Necessary\\vsc\\航电\\1\\1001.cpp","group":"local","local":true}

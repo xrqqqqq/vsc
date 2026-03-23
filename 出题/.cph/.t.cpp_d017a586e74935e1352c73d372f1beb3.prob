@@ -1,0 +1,1 @@
+{"name":"Local: t","url":"d:\\Necessary\\vsc\\出题\\t.cpp","tests":[{"id":1773322920085,"input":"NOISE:  ###\nnoise:###\na\t!@#$%a\n0\n","output":"a’\\t!@#$%a\n"}],"interactive":false,"memoryLimit":1024,"timeLimit":3000,"srcPath":"d:\\Necessary\\vsc\\出题\\t.cpp","group":"local","local":true}
